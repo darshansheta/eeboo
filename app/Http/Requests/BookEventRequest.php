@@ -38,7 +38,11 @@ class BookEventRequest extends FormRequest
                     $eventId = $this->route('event');
                     $day = date('Y-m-d', strtotime($value));
                     $slots = $eventService->getAvailableSlots($eventId, $day);
-                    
+                    // echo '<pre>';
+                    // print_r($slots);
+                    // echo '====================';
+                    // print_r($eventService->getAvailableDays($eventId));
+                    // echo '====================';
                     $slotAvailable = collect($slots)->contains(function ($slot) use ($value) {
                         return strtotime($slot['startAt']) == strtotime($value);
                     });

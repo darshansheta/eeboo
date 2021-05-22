@@ -25,6 +25,13 @@ class EventService
                 $query->orderBy('start_hour');
             }, 'bookings'])
             ->find($eventId);
+        if (empty($event)) {
+            return [];
+        }
+
+        if (! in_array($day, $this->getAvailableDays($eventId))) {
+            return [];
+        }
 
         $dayActiveTimeWindows = $event->activeTimeWindows->filter(function ($timeWindow) use ($day) {
             return $timeWindow->week_day == date('w', strtotime($day));
@@ -148,10 +155,15 @@ class EventService
             return [];
         }
 
+        $endDate = !empty($event->start_date) && strtotime($event->start_date) < strtotime('+'.$event->advance_booking_days." days")
+            ? $event->start_date
+            : date('Y-m-d', strtotime('+'.$event->advance_booking_days." days"));
+        
+        $event->start_date ?: date("Y-m-t");
         $period = new DatePeriod(
              new DateTime($event->start_date ?: date('Y-m-d')),
              new DateInterval('P1D'),
-             new DateTime($event->start_date ?: date("Y-m-t"))
+             new DateTime($endDate)
         );
 
         //week day - start from 0 
