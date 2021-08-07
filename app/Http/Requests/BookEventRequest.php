@@ -6,6 +6,7 @@ use Illuminate\Foundation\Http\FormRequest;
 use App\Models\Event;
 use Illuminate\Validation\Rule;
 use App\Services\EventService;
+use Illuminate\Support\Carbon;
 
 class BookEventRequest extends FormRequest
 {
@@ -28,23 +29,19 @@ class BookEventRequest extends FormRequest
     {
         $eventService = resolve(EventService::class);
         return [
-            'email' => 'required|email',
+            'email'      => 'required|email',
             'first_name' => 'required|min:3',
-            'last_name' => 'required|min:3',
+            'last_name'  => 'required|min:3',
             'slot' => [
                 'required',
                 'date_format:Y-m-d H:i:s',
                 function ($attribute, $value, $fail) use ($eventService) {
-                    $eventId = $this->route('event');
-                    $day = date('Y-m-d', strtotime($value));
-                    $slots = $eventService->getAvailableSlots($eventId, $day);
-                    // echo '<pre>';
-                    // print_r($slots);
-                    // echo '====================';
-                    // print_r($eventService->getAvailableDays($eventId));
-                    // echo '====================';
+                    $event         = $this->route('event');
+                    $day           = Carbon::parse($value);
+                    $slots         = $eventService->getAvailableSlots($event, $day->toDateString());
+
                     $slotAvailable = collect($slots)->contains(function ($slot) use ($value) {
-                        return strtotime($slot['startAt']) == strtotime($value);
+                        return $slot['startAt']->eq(Carbon::parse($value));
                     });
 
                     if (! $slotAvailable) {

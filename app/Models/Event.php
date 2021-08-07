@@ -28,4 +28,14 @@ class Event extends Model
     {
         return $this->hasMany(Booking::class);
     }
+
+    public  function loadTimeWindowsAndBookings()
+    {
+        return $this->load([
+                'activeTimeWindows' =>  function ($query) {
+                    $query->orderBy('start_hour');
+                }, 'inactiveTimeWindows' =>  function ($query) {
+                    $query->orderBy('start_hour');
+                }, 'bookings']);
+    }
 }

@@ -2,8 +2,7 @@
 
 namespace App\Services;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
 use App\Models\Event;
 use App\Models\TimeWindow;
 use App\Models\Booking;
@@ -15,64 +14,82 @@ use DB;
 
 class EventService
 {
-    public function getAvailableSlots($eventId, $day)
+    /**
+     * get slots for event for particular day
+     * @param Event $event
+     * @param $day
+     * 
+     * @return array
+     **/
+    public function getAvailableSlots(Event $event, $day)
     {
         $slots = [];
-        $event = Event::with([
-            'activeTimeWindows' =>  function ($query) {
-                $query->orderBy('start_hour');
-            }, 'inactiveTimeWindows' =>  function ($query) {
-                $query->orderBy('start_hour');
-            }, 'bookings'])
-            ->find($eventId);
-        if (empty($event)) {
+        $day   = Carbon::parse($day);
+        $event->loadTimeWindowsAndBookings();
+
+        $slots = $this->getSlotsFromActiveWindow($event, $day);
+
+        if (empty($slots)) {
             return [];
         }
 
-        if (! in_array($day, $this->getAvailableDays($eventId))) {
-            return [];
-        }
+        $slots = $this->removeSlotsFromInActiveWindow($event, $day, $slots);
+        $slots = $this->removeBookedSlots($event, $day, $slots);
+        return $this->removePastSlots($event, $day, $slots);
+    }
 
-        $dayActiveTimeWindows = $event->activeTimeWindows->filter(function ($timeWindow) use ($day) {
-            return $timeWindow->week_day == date('w', strtotime($day));
-        });
-        $dayInactiveTimeWindows = $event->inactiveTimeWindows->filter(function ($timeWindow) use ($day) {
-            return $timeWindow->week_day == date('w', strtotime($day));
-        });
+    /**
+     * get slots from particular time window of particular day
+     * @param Event $event
+     * @param Carbon $day
+     * 
+     * @return array
+     **/
+    public function getSlotsFromActiveWindow(Event $event, Carbon $day)
+    {
+        $slots = [];
+
+        // get all active window for week of day
+        $dayActiveTimeWindows = $event->activeTimeWindows
+            ->filter(function ($timeWindow) use ($day) {
+                return $timeWindow->week_day == $day->format('w');
+            });
 
         if ($dayActiveTimeWindows->isEmpty()) {
             return [];
         }
 
         foreach($dayActiveTimeWindows as $window) {
-            $startAt = null;
-            $windowEndAt = $day." ".$window->end_hour.":00";
+            $startAt     = null;
+            $windowEndAt = $day->copy()->hour($window->end_hour);
+
             do {
                 if (empty($startAt)) {
-                    $startAt = $day." ".$window->start_hour.":00";
+                    $startAt = $day->copy()->hour($window->start_hour);
                 }
-                $endAt = date('Y-m-d H:i:00', strtotime('+'.$event->duration.' minutes', strtotime($startAt)));
+                $endAt = $startAt->copy()->addMinutes($event->duration);
 
                 $slots[] = [
-                    'day' => $day,
-                    'startAt' => $startAt,
-                    'endAt' => $endAt,
-                    'startTime' => substr($startAt, 11, 5),
-                    'endTime' =>  substr($endAt, 11, 5),
+                    'day'        => $day->format('Y-m-d'),
+                    'startAt'    => $startAt,
+                    'endAt'      => $endAt,
+                    'startTime'  => $startAt->format('H:i'),
+                    'endTime'    =>  $endAt->format('H:i'),
                     'slot_count' => $event->max_slot,
                 ];
 
                 $startAt = $endAt;
 
             } while (
-             date('Ymd', strtotime($day)) == date('Ymd', strtotime($startAt)) && // check if day change or not
-             strtotime($windowEndAt) >= strtotime($endAt) // check if slot time is out of window or not 
+             $day->toDateString() === $startAt->toDateString() && // check if day change or not
+             $windowEndAt->gte($endAt) // check if slot time is out of window or not 
             );
 
             // check if fall out of range
             $currentWindowLastSlotIndex = count($slots)-1;
-            $currentWindowLastSlot = $slots[$currentWindowLastSlotIndex];
-            if ( date('Hi', strtotime($currentWindowLastSlot['endAt'])) > str_replace(':', '', $window->end_hour) ) {
+            $currentWindowLastSlot      = $slots[$currentWindowLastSlotIndex];
+            
+            if ( $currentWindowLastSlot['endAt']->gt($windowEndAt)) {
                 unset($slots[$currentWindowLastSlotIndex]);
                 $slots = array_values($slots);
             }
@@ -81,44 +98,72 @@ class EventService
         // check if last slot fall on next day?
         $lastSlotIndex = count($slots)-1;
         $lastSlot = $slots[$lastSlotIndex];
-        if (date('Y-m-d', strtotime($lastSlot['endAt'])) == date('Y-m-d', strtotime('1 days', strtotime($day)))) {
+        if ($lastSlot['endAt']->toDateString() === $day->copy()->addDays(1)->toDateString()) {
             unset($slots[$lastSlotIndex]);
             $slots = array_values($slots);
         }
 
+        return $slots;
+    }
+
+    /**
+     * remove slots from particular inactive time window of particular day
+     * @param Event $event
+     * @param Carbon $day
+     * @param array $slots
+     * 
+     * @return array
+     **/
+    public function removeSlotsFromInActiveWindow(Event $event, Carbon $day, array $slots)
+    {
+        $dayInactiveTimeWindows = $event->inactiveTimeWindows
+            ->filter(function ($timeWindow) use ($day) {
+                return $timeWindow->week_day == $day->format('w');
+            });
+        
         foreach($dayInactiveTimeWindows as $window) {
             foreach($slots as $k => $slot) {
-                $startHourInt = str_replace(':', '', $window->start_hour);
-                $endHourInt = str_replace(':', '', $window->end_hour);
-                $slotStartHourInt = date('Hi', strtotime($slot['startAt']));
-                $slotEndHourInt = date('Hi', strtotime($slot['endAt']));
+                $startHour     = $day->copy()->hour($window->start_hour);
+                $endHour       = $day->copy()->hour($window->end_hour);
+                $slotStartHour = $slot['startAt'];
+                $slotEndHour   = $slot['endAt'];
                 
-                if ($startHourInt < $slotStartHourInt && $slotStartHourInt < $endHourInt) {
+                if ($startHour->lt($slotStartHour) && $slotStartHour->lt($endHour)) {
                     unset($slots[$k]);
                     continue;
                 }
-                if ($startHourInt < $slotEndHourInt && $slotEndHourInt < $endHourInt) {
+                if ($startHour->lt($slotEndHour) && $slotEndHour->lt($endHour)) {                    
                     unset($slots[$k]);
                     continue;
                 }
-               // echo $startHourInt .'=='. $slotStartHourInt .'&&'. $slotEndHourInt .'=='. $endHourInt."<br>";
-                if ($startHourInt == $slotStartHourInt && $slotEndHourInt == $endHourInt) {
+                if ($startHour->eq($slotStartHour) && $slotEndHour->eq($endHour)) {
                     unset($slots[$k]);
                     continue;
                 }
             }
         }
 
-        
+        return array_values($slots);
+    }
 
+    /**
+     * remove slots which are booked
+     * @param Event $event
+     * @param Carbon $day
+     * @param array $slots
+     * 
+     * @return array
+     **/
+    public function removeBookedSlots(Event $event, Carbon $day, $slots)
+    {
         // exclude those are booked // two way by mysql or by php looping slots
         $bookings = Booking::select(['start_at', 'end_at', DB::raw('count(*) booked_slot')])
-            ->where('event_id', $eventId)
+            ->where('event_id', $event->id)
             ->groupBy(['start_at', 'end_at'])
-            //->havingRaw('count(id) >= ?',$event->max_slot)
             ->get()->keyBy('start_at');
+
         foreach ($slots as $k => &$slot) {
-            $booking = $bookings[$slot['startAt']] ?? null;
+            $booking = $bookings[$slot['startAt']->toDateTimeString()] ?? null;
             if (! empty($booking)) {
                 $slot['slot_count'] = $slot['slot_count'] - $booking->booked_slot;
                 $slot['slot_count'] = $slot['slot_count'] <= 0 ? 0 : $slot['slot_count'];
@@ -129,15 +174,27 @@ class EventService
             }
         }
 
+        return array_values($slots);
+    }
 
+    /**
+     * remove past slots
+     * @param Event $event
+     * @param Carbon $day
+     * @param array $slots
+     * 
+     * @return array
+     **/
+    public function removePastSlots(Event $event, Carbon $day, $slots)
+    {
         //also remove past slot or which exceed preparation time of event 
-        $currentTime = time();
+        $currentTime = now();
         if ($event->preparation) {
-           $currentTime = strtotime('+'.$event->preparation.' minutes');
+           $currentTime = $day->copy()->addMinutes($event->preparation);
         }
-        $slots = array_values($slots);
-        foreach ($slots as $kk => $ss) {
-            if ($currentTime > strtotime($ss['startAt'])) {
+
+        foreach ($slots as $kk => $slot) {
+            if ($currentTime->gt($slot['startAt'])) {
                 unset($slots[$kk]);
             }
         }
@@ -145,11 +202,16 @@ class EventService
         return array_values($slots);
     }
 
-    public function getAvailableDays($eventId)
+    /**
+     * get next available booking days of event
+     * @param Event $event
+     * 
+     * @return array
+     **/
+    public function getAvailableDays(Event $event)
     {
         $days = [];
-        $event = Event::with(['activeTimeWindows', 'inactiveTimeWindows', 'bookings'])
-            ->find($eventId);
+        $event->load(['activeTimeWindows']);
 
         if (empty($event)) {
             return [];
@@ -183,17 +245,15 @@ class EventService
         return $days;
     }
 
-    public function bookEventSlot($eventId, $data)
+    public function bookEventSlot(Event $event, $data)
     {
-        $event = Event::find($eventId);
-
-        $booking = new Booking;
-        $booking->event_id = $event->id;
+        $booking             = new Booking;
+        $booking->event_id   = $event->id;
         $booking->first_name = $data['first_name'];
-        $booking->last_name = $data['last_name'];
-        $booking->email = $data['email'];
-        $booking->start_at = $data['slot'];
-        $booking->end_at = date('Y-m-d H:i:s', strtotime('+'.$event->duration.' minutes',strtotime($data['slot'])));
+        $booking->last_name  = $data['last_name'];
+        $booking->email      = $data['email'];
+        $booking->start_at   = $data['slot'];
+        $booking->end_at     = date('Y-m-d H:i:s', strtotime('+'.$event->duration.' minutes',strtotime($data['slot'])));
         $booking->save();
 
         return $booking;
