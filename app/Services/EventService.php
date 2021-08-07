@@ -96,7 +96,7 @@ class EventService
         }
 
         // check if last slot fall on next day?
-        $lastSlotIndex = count($slots)-1;
+        $lastSlotIndex = count($slots) - 1; // we need last slot index to unset if condition is true
         $lastSlot = $slots[$lastSlotIndex];
         if ($lastSlot['endAt']->toDateString() === $day->copy()->addDays(1)->toDateString()) {
             unset($slots[$lastSlotIndex]);
@@ -231,11 +231,10 @@ class EventService
         //week day - start from 0 
         foreach ($period as $key => $day) {
 
-            $hasSlot = $event->activeTimeWindows->contains(function($timeWindow)  use ($day) {
-                //Log::info($timeWindow->week_day ."==". $day->format('N')."|".$day->format('Y-m-d'));
-                
-                return $timeWindow->week_day == date('w', strtotime($day->format('Y-m-d')));
-            });
+            $hasSlot = $event->activeTimeWindows
+                ->contains(function($timeWindow)  use ($day) {
+                    return $timeWindow->week_day == date('w', strtotime($day->format('Y-m-d')));
+                });
 
             if ($hasSlot) {
                 $days[] = $day->format('Y-m-d');
@@ -245,6 +244,13 @@ class EventService
         return $days;
     }
 
+    /**
+     * book an event for given slot
+     * @param Event $event
+     * @param array $data
+     * 
+     * @return Booking
+     **/
     public function bookEventSlot(Event $event, $data)
     {
         $booking             = new Booking;
@@ -253,7 +259,7 @@ class EventService
         $booking->last_name  = $data['last_name'];
         $booking->email      = $data['email'];
         $booking->start_at   = $data['slot'];
-        $booking->end_at     = date('Y-m-d H:i:s', strtotime('+'.$event->duration.' minutes',strtotime($data['slot'])));
+        $booking->end_at     = Carbon::parse($data['slot'])->addMinutes($event->duration);
         $booking->save();
 
         return $booking;
