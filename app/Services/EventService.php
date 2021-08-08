@@ -233,7 +233,7 @@ class EventService
 
             $hasSlot = $event->activeTimeWindows
                 ->contains(function($timeWindow)  use ($day) {
-                    return $timeWindow->week_day == date('w', strtotime($day->format('Y-m-d')));
+                    return $timeWindow->week_day == $day->format('w');
                 });
 
             if ($hasSlot) {
